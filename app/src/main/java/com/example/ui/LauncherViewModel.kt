@@ -25,6 +25,7 @@ sealed class LauncherScreen {
     data class EnterPin(val nextScreen: LauncherScreen) : LauncherScreen()
     object SetupPin : LauncherScreen()
     object ParentalDashboard : LauncherScreen()
+    object NovaX : LauncherScreen()
 }
 
 data class AppItemUi(
@@ -60,6 +61,33 @@ class LauncherViewModel(
     private val _isParentalModeEnabled = MutableStateFlow(true)
     val isParentalModeEnabled: StateFlow<Boolean> = _isParentalModeEnabled
 
+    private val _launcherLayoutMode = MutableStateFlow("horizontal_pager")
+    val launcherLayoutMode: StateFlow<String> = _launcherLayoutMode
+
+    // Customizable Wallpaper theme state: default 'space_sky'
+    private val _wallpaperValue = MutableStateFlow("space_sky")
+    val wallpaperValue: StateFlow<String> = _wallpaperValue
+
+    // Nova X themes / custom settings
+    private val _novaXThemeStyle = MutableStateFlow("glass_shaffof")
+    val novaXThemeStyle: StateFlow<String> = _novaXThemeStyle
+
+    private val _novaXWebWallpaperUrl = MutableStateFlow("")
+    val novaXWebWallpaperUrl: StateFlow<String> = _novaXWebWallpaperUrl
+
+    private val _customAppLabels = MutableStateFlow<Map<String, String>>(emptyMap())
+    val customAppLabels: StateFlow<Map<String, String>> = _customAppLabels
+
+    private val _novaXIconTint = MutableStateFlow("none")
+    val novaXIconTint: StateFlow<String> = _novaXIconTint
+
+    private val _novaXColumnGridCount = MutableStateFlow(4)
+    val novaXColumnGridCount: StateFlow<Int> = _novaXColumnGridCount
+
+    // Custom App placements/ordering indices
+    private val _appOrders = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val appOrders: StateFlow<Map<String, Int>> = _appOrders
+
     // Temporary storage for app limits
     private val _activeAppToLimit = MutableStateFlow<AppItemUi?>(null)
     val activeAppToLimit: StateFlow<AppItemUi?> = _activeAppToLimit
@@ -79,16 +107,26 @@ class LauncherViewModel(
         viewModelScope.launch {
             _storedPin.value = repository.getParentPin()
             _isParentalModeEnabled.value = repository.isParentalModeEnabled()
+            _launcherLayoutMode.value = repository.getLauncherLayoutMode() ?: "horizontal_pager"
+            _wallpaperValue.value = repository.getWallpaperValue() ?: "space_sky"
+
+            // Nova X Loads
+            _novaXThemeStyle.value = repository.getGenericSetting("novax_theme_style") ?: "glass_shaffof"
+            _novaXWebWallpaperUrl.value = repository.getGenericSetting("novax_web_wallpaper") ?: ""
+            _novaXIconTint.value = repository.getGenericSetting("novax_icon_tint") ?: "none"
+            _novaXColumnGridCount.value = repository.getGenericSetting("novax_column_grid_count")?.toIntOrNull() ?: 4
+
             refreshAppsList()
         }
     }
 
-    // Combine manual app information with database locks and usage limits
+    // Combine manual app information with database locks, usage limits, and custom labels
     val appListCombined: StateFlow<List<AppItemUi>> = combine(
         _installedLauncherApps,
         repository.allRestrictions,
-        _isParentalModeEnabled
-    ) { installedApps, restrictions, parentalEnabled ->
+        _isParentalModeEnabled,
+        _customAppLabels
+    ) { installedApps, restrictions, parentalEnabled, customLabels ->
         val restrictionMap = restrictions.associateBy { it.packageName }
         installedApps.map { app ->
             val restriction = restrictionMap[app.packageName]
@@ -107,15 +145,19 @@ class LauncherViewModel(
                 0
             }
 
+            val finalLabel = customLabels[app.packageName] ?: app.label
+
             AppItemUi(
                 packageName = app.packageName,
-                label = app.label,
+                label = finalLabel,
                 isBlocked = isBlocked,
                 limitMinutes = limit,
                 usedMinutesToday = usedToday,
                 isSystemApp = app.isSystemApp
             )
         }
+    }.combine(_appOrders) { appsList, orders ->
+        appsList.sortedBy { orders[it.packageName] ?: Int.MAX_VALUE }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -173,6 +215,62 @@ class LauncherViewModel(
 
     fun closeBlockOverlay() {
         _blockedAppOverlay.value = null
+    }
+
+    fun setLauncherLayoutMode(mode: String) {
+        viewModelScope.launch {
+            repository.saveLauncherLayoutMode(mode)
+            _launcherLayoutMode.value = mode
+        }
+    }
+
+    fun setWallpaperValue(theme: String) {
+        viewModelScope.launch {
+            repository.saveWallpaperValue(theme)
+            _wallpaperValue.value = theme
+        }
+    }
+
+    fun moveAppLeftOrUp(packageName: String, visibleApps: List<AppItemUi>) {
+        viewModelScope.launch {
+            val currentIndex = visibleApps.indexOfFirst { it.packageName == packageName }
+            if (currentIndex > 0) {
+                val otherApp = visibleApps[currentIndex - 1]
+                val currentOrderVal = _appOrders.value[packageName] ?: currentIndex
+                val otherOrderVal = _appOrders.value[otherApp.packageName] ?: (currentIndex - 1)
+
+                val finalCurrentVal = if (currentOrderVal == otherOrderVal) currentOrderVal + 1 else currentOrderVal
+
+                repository.saveAppOrder(packageName, otherOrderVal)
+                repository.saveAppOrder(otherApp.packageName, finalCurrentVal)
+
+                val newMap = _appOrders.value.toMutableMap()
+                newMap[packageName] = otherOrderVal
+                newMap[otherApp.packageName] = finalCurrentVal
+                _appOrders.value = newMap
+            }
+        }
+    }
+
+    fun moveAppRightOrDown(packageName: String, visibleApps: List<AppItemUi>) {
+        viewModelScope.launch {
+            val currentIndex = visibleApps.indexOfFirst { it.packageName == packageName }
+            if (currentIndex >= 0 && currentIndex < visibleApps.size - 1) {
+                val otherApp = visibleApps[currentIndex + 1]
+                val currentOrderVal = _appOrders.value[packageName] ?: currentIndex
+                val otherOrderVal = _appOrders.value[otherApp.packageName] ?: (currentIndex + 1)
+
+                val finalCurrentVal = if (currentOrderVal == otherOrderVal) currentOrderVal - 1 else currentOrderVal
+
+                repository.saveAppOrder(packageName, otherOrderVal)
+                repository.saveAppOrder(otherApp.packageName, finalCurrentVal)
+
+                val newMap = _appOrders.value.toMutableMap()
+                newMap[packageName] = otherOrderVal
+                newMap[otherApp.packageName] = finalCurrentVal
+                _appOrders.value = newMap
+            }
+        }
     }
 
     // Refresh PIN state
@@ -245,6 +343,10 @@ class LauncherViewModel(
 
     // Main launcher logic: launch target package or trigger blocked overlay
     fun selectAndLaunchApp(context: Context, app: AppItemUi) {
+        if (app.packageName == "com.novax.settings") {
+            navigateTo(LauncherScreen.NovaX)
+            return
+        }
         viewModelScope.launch {
             // Check parental locks
             if (_isParentalModeEnabled.value) {
@@ -348,8 +450,32 @@ class LauncherViewModel(
                 LauncherAppInfo(packageName, label, isSystemApp)
             }.distinctBy { it.packageName }
                 .filter { it.packageName != context.packageName } // exclude self
+                .toMutableList()
+
+            // Inject the virtual "Nova Sozlamalari" app so it sits in the app lists like a native app
+            physicalApps.add(
+                LauncherAppInfo(
+                    packageName = "com.novax.settings",
+                    label = "Nova Sozlamalari",
+                    isSystemApp = true
+                )
+            )
 
             _installedLauncherApps.value = physicalApps
+            loadCustomAppLabels(physicalApps)
+
+            // Populate system-wide custom sorting orders
+            val orders = mutableMapOf<String, Int>()
+            physicalApps.forEachIndexed { index, app ->
+                val savedOrder = repository.getAppOrder(app.packageName)
+                if (savedOrder != null) {
+                    orders[app.packageName] = savedOrder
+                } else {
+                    orders[app.packageName] = index
+                    repository.saveAppOrder(app.packageName, index)
+                }
+            }
+            _appOrders.value = orders
 
             // Sync with Room database so any new app gets default settings
             repository.allRestrictions.collect { existingRestrictions ->
@@ -372,6 +498,60 @@ class LauncherViewModel(
                     repository.saveRestrictions(newEntries)
                 }
             }
+        }
+    }
+
+    private fun loadCustomAppLabels(installed: List<LauncherAppInfo>) {
+        viewModelScope.launch {
+            val map = mutableMapOf<String, String>()
+            installed.forEach { app ->
+                val custom = repository.getGenericSetting("app_label_${app.packageName}")
+                if (!custom.isNullOrEmpty()) {
+                    map[app.packageName] = custom
+                }
+            }
+            _customAppLabels.value = map
+        }
+    }
+
+    fun setNovaXThemeStyle(style: String) {
+        viewModelScope.launch {
+            repository.saveGenericSetting("novax_theme_style", style)
+            _novaXThemeStyle.value = style
+        }
+    }
+
+    fun setNovaXWebWallpaperUrl(url: String) {
+        viewModelScope.launch {
+            repository.saveGenericSetting("novax_web_wallpaper", url)
+            _novaXWebWallpaperUrl.value = url
+        }
+    }
+
+    fun setNovaXIconTint(tint: String) {
+        viewModelScope.launch {
+            repository.saveGenericSetting("novax_icon_tint", tint)
+            _novaXIconTint.value = tint
+        }
+    }
+
+    fun setNovaXColumnGridCount(count: Int) {
+        viewModelScope.launch {
+            repository.saveGenericSetting("novax_column_grid_count", count.toString())
+            _novaXColumnGridCount.value = count
+        }
+    }
+
+    fun setCustomAppLabel(packageName: String, newLabel: String) {
+        viewModelScope.launch {
+            repository.saveGenericSetting("app_label_$packageName", newLabel)
+            val updated = _customAppLabels.value.toMutableMap()
+            if (newLabel.isEmpty()) {
+                updated.remove(packageName)
+            } else {
+                updated[packageName] = newLabel
+            }
+            _customAppLabels.value = updated
         }
     }
 }

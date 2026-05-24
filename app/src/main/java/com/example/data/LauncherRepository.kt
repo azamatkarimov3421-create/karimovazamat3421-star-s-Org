@@ -52,6 +52,38 @@ class LauncherRepository(private val db: AppDatabase) {
         db.settingDao().saveSetting(ParentSetting("parental_mode_enabled", enabled.toString()))
     }
 
+    suspend fun getLauncherLayoutMode(): String? = withContext(Dispatchers.IO) {
+        db.settingDao().getSetting("launcher_layout_mode")?.value
+    }
+
+    suspend fun saveLauncherLayoutMode(mode: String) = withContext(Dispatchers.IO) {
+        db.settingDao().saveSetting(ParentSetting("launcher_layout_mode", mode))
+    }
+
+    suspend fun getWallpaperValue(): String? = withContext(Dispatchers.IO) {
+        db.settingDao().getSetting("launcher_wallpaper_value")?.value
+    }
+
+    suspend fun saveWallpaperValue(value: String) = withContext(Dispatchers.IO) {
+        db.settingDao().saveSetting(ParentSetting("launcher_wallpaper_value", value))
+    }
+
+    suspend fun getGenericSetting(key: String): String? = withContext(Dispatchers.IO) {
+        db.settingDao().getSetting(key)?.value
+    }
+
+    suspend fun saveGenericSetting(key: String, value: String) = withContext(Dispatchers.IO) {
+        db.settingDao().saveSetting(ParentSetting(key, value))
+    }
+
+    suspend fun getAppOrder(packageName: String): Int? = withContext(Dispatchers.IO) {
+        db.settingDao().getSetting("app_order_$packageName")?.value?.toIntOrNull()
+    }
+
+    suspend fun saveAppOrder(packageName: String, order: Int) = withContext(Dispatchers.IO) {
+        db.settingDao().saveSetting(ParentSetting("app_order_$packageName", order.toString()))
+    }
+
     fun getRealAppUsageMinutes(context: Context, packageName: String): Int {
         try {
             val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return 0
